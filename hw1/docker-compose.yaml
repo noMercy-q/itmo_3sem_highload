@@ -1,0 +1,149 @@
+services:
+  app:
+    build: .
+    environment:
+      HTTP_ADDR: ":8080"
+      POD_NUMBER: "${POD_NUMBER:-1}"
+      DATACENTER: "${DATACENTER:-local-dc}"
+      DEPLOYMENT_NAME: "${DEPLOYMENT_NAME:-items-service}"
+      METRICS_NAMESPACE: "demo"
+    ports:
+      - "${APP_PORT:-18080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+    restart: unless-stopped
+
+  app-dc2:
+    build: .
+    environment:
+      HTTP_ADDR: ":8080"
+      POD_NUMBER: "${POD_NUMBER_2:-2}"
+      DATACENTER: "${DATACENTER_2:-remote-dc}"
+      DEPLOYMENT_NAME: "${DEPLOYMENT_NAME:-items-service}"
+      METRICS_NAMESPACE: "demo"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+    restart: unless-stopped
+
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics:v1.154.1
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-retentionPeriod=7d"
+      - "-promscrape.config=/etc/victoriametrics/prometheus.yml"
+    volumes:
+      - "./prometheus.yml:/etc/victoriametrics/prometheus.yml:ro"
+      - "victoria_metrics_data:/victoria-metrics-data"
+    ports:
+      - "${VICTORIAMETRICS_PORT:-18428}:8428"
+    depends_on:
+      app:
+        condition: service_healthy
+      app-dc2:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - "./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro"
+      - "grafana_data:/var/lib/grafana"
+    ports:
+      - "${GRAFANA_PORT:-13000}:3000"
+    depends_on:
+      - victoria-metrics
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  dashboard-generator:
+    build: .
+    entrypoint: ["/dashboardgen"]
+    environment:
+      APP_URL: "http://app:8080"
+      GRAFANA_URL: "http://grafana:3000"
+      GRAFANA_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GRAFANA_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GRAFANA_SERVICE_ACCOUNT: "dashboard-generator"
+      GRAFANA_DASHBOARD_UID: "items-golden-signals"
+      GRAFANA_DATASOURCE_UID: "victoriametrics"
+    depends_on:
+      app:
+        condition: service_healthy
+      victoria-metrics:
+        condition: service_started
+      grafana:
+        condition: service_healthy
+    restart: "no"
+
+  load-generator:
+    build: .
+    entrypoint: ["/loadgen"]
+    environment:
+      TARGET_URL: "${TARGET_URL:-http://app:8080}"
+      LOAD_START_RPS: "${LOAD_START_RPS:-1}"
+      LOAD_TARGET_RPS: "${LOAD_TARGET_RPS:-10}"
+      LOAD_RAMP_DURATION: "${LOAD_RAMP_DURATION:-30s}"
+      LOAD_ERROR_MIN_PERCENT: "${LOAD_ERROR_MIN_PERCENT:-5}"
+      LOAD_ERROR_MAX_PERCENT: "${LOAD_ERROR_MAX_PERCENT:-35}"
+      LOAD_ERROR_CYCLE_DURATION: "${LOAD_ERROR_CYCLE_DURATION:-2m}"
+      LOAD_REQUEST_TIMEOUT: "${LOAD_REQUEST_TIMEOUT:-3s}"
+      LOAD_LOG_INTERVAL: "${LOAD_LOG_INTERVAL:-10s}"
+      LOAD_MAX_IN_FLIGHT: "${LOAD_MAX_IN_FLIGHT:-32}"
+    depends_on:
+      app:
+        condition: service_healthy
+      victoria-metrics:
+        condition: service_started
+      grafana:
+        condition: service_healthy
+      dashboard-generator:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  load-generator-dc2:
+    build: .
+    entrypoint: ["/loadgen"]
+    environment:
+      TARGET_URL: "${TARGET_URL_2:-http://app-dc2:8080}"
+      LOAD_START_RPS: "${LOAD_START_RPS:-1}"
+      LOAD_TARGET_RPS: "${LOAD_TARGET_RPS:-10}"
+      LOAD_RAMP_DURATION: "${LOAD_RAMP_DURATION:-30s}"
+      LOAD_ERROR_MIN_PERCENT: "${LOAD_ERROR_MIN_PERCENT:-5}"
+      LOAD_ERROR_MAX_PERCENT: "${LOAD_ERROR_MAX_PERCENT:-35}"
+      LOAD_ERROR_CYCLE_DURATION: "${LOAD_ERROR_CYCLE_DURATION:-2m}"
+      LOAD_REQUEST_TIMEOUT: "${LOAD_REQUEST_TIMEOUT:-3s}"
+      LOAD_LOG_INTERVAL: "${LOAD_LOG_INTERVAL:-10s}"
+      LOAD_MAX_IN_FLIGHT: "${LOAD_MAX_IN_FLIGHT:-32}"
+    depends_on:
+      app-dc2:
+        condition: service_healthy
+      victoria-metrics:
+        condition: service_started
+      grafana:
+        condition: service_healthy
+      dashboard-generator:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  victoria_metrics_data:
+  grafana_data:
