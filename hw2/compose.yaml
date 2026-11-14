@@ -1,0 +1,17 @@
+services:
+  tests:
+    image: golang:1.27.4-bookworm
+    init: true
+    working_dir: /app
+    environment:
+      GOCACHE: /go-cache
+      GOMODCACHE: /go/pkg/mod
+    volumes:
+      - .:/app:ro
+      - go-build-cache:/go-cache
+      - go-mod-cache:/go/pkg/mod
+    command: ["./test.sh"]
+
+volumes:
+  go-build-cache:
+  go-mod-cache:
